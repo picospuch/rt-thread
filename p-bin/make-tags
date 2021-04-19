@@ -1,0 +1,21 @@
+#!/bin/bash
+# clang files
+# use find -H * will follow first level symbolic link
+DIRS=`ls`
+BSP_PATH_RULE='( ! -path bsp* -or -path bsp/raspberry* )'
+
+set -f
+find -H $DIRS \( \
+     -name "*.[cChH]" \
+     \) \
+     $BSP_PATH_RULE \
+     -print | etags -
+
+# make files
+find -H $DIRS \( \
+     -name "[Mm]akefile" -or \
+     -name "*.mk" \
+     \) \
+     $BSP_PATH_RULE \
+     -print | etags -a -lmakefile -
+set +f

@@ -7,6 +7,7 @@ fi
 qemu-system-arm \
     -nographic \
     -M vexpress-a9 -smp cpus=2 \
+    -m 2M \
     -kernel rtthread.bin \
     -chardev stdio,mux=on,id=char0 \
     -mon chardev=char0,mode=readline \
