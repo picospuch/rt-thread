@@ -68,6 +68,100 @@ static void num2str(char *c, int i)
     c[1] = i % 10 + '0';
 }
 
+/**
+ * Get time from RTC device (without timezone)
+ * @param tv: struct timeval
+ * @return -1 failure; 1 success
+ */
+static int get_timeval(struct timeval *tv)
+{
+#ifdef RT_USING_RTC
+    static rt_device_t device = RT_NULL;
+    rt_err_t rst = -RT_ERROR;
+
+    if (tv == RT_NULL)
+        return -1;
+
+    /* default is 0 */
+    tv->tv_sec = 0;
+    tv->tv_usec = 0;
+
+    /* optimization: find rtc device only first */
+    if (device == RT_NULL)
+    {
+        device = rt_device_find("rtc");
+    }
+
+    /* read timestamp from RTC device */
+    if (device != RT_NULL)
+    {
+        if (rt_device_open(device, 0) == RT_EOK)
+        {
+            rst = rt_device_control(device, RT_DEVICE_CTRL_RTC_GET_TIME, &tv->tv_sec);
+            rt_device_control(device, RT_DEVICE_CTRL_RTC_GET_TIME_US, &tv->tv_usec);
+            rt_device_close(device);
+        }
+    }
+    else
+    {
+        /* LOG_W will cause a recursive printing if ulog timestamp function is turned on */
+        rt_kprintf("Cannot find a RTC device to provide time!\r\n");
+        return -1;
+    }
+
+    return (rst < 0) ? -1 : 1;
+
+#else
+    /* LOG_W will cause a recursive printing if ulog timestamp function is turned on */
+    rt_kprintf("Cannot find a RTC device to provide time!\r\n");
+    return -1;
+#endif /* RT_USING_RTC */
+}
+
+/**
+ * Set time to RTC device (without timezone)
+ * @param tv: struct timeval
+ * @return -1 failure; 1 success
+ */
+static int set_timeval(struct timeval *tv)
+{
+#ifdef RT_USING_RTC
+    static rt_device_t device = RT_NULL;
+    rt_err_t rst = -RT_ERROR;
+
+    if (tv == RT_NULL)
+        return -1;
+
+    /* optimization: find rtc device only first */
+    if (device == RT_NULL)
+    {
+        device = rt_device_find("rtc");
+    }
+
+    /* read timestamp from RTC device */
+    if (device != RT_NULL)
+    {
+        if (rt_device_open(device, 0) == RT_EOK)
+        {
+            rst = rt_device_control(device, RT_DEVICE_CTRL_RTC_SET_TIME, &tv->tv_sec);
+            rt_device_control(device, RT_DEVICE_CTRL_RTC_SET_TIME_US, &tv->tv_usec);
+            rt_device_close(device);
+        }
+    }
+    else
+    {
+        LOG_W("Cannot find a RTC device to provide time!");
+        return -1;
+    }
+
+    return (rst < 0) ? -1 : 1;
+
+#else
+    LOG_W("Cannot find a RTC device to provide time!");
+    return -1;
+#endif /* RT_USING_RTC */
+}
+
 struct tm *gmtime_r(const time_t *timep, struct tm *r)
 {
     time_t i;
@@ -120,7 +214,7 @@ struct tm* localtime_r(const time_t* t, struct tm* r)
     time_t local_tz;
     int utc_plus;
 
-    utc_plus = 0; /* GTM: UTC+0 */
+    utc_plus = 8; /* GMT: UTC+8 */
     local_tz = *t + utc_plus * 3600;
     return gmtime_r(&local_tz, r);
 }
@@ -136,7 +230,13 @@ RTM_EXPORT(localtime);
 /* TODO: timezone */
 time_t mktime(struct tm * const t)
 {
-    return timegm(t);
+    time_t timestamp;
+    int utc_plus;
+
+    utc_plus = 8; /* GMT: UTC+8 */
+    timestamp = timegm(t);
+    timestamp = timestamp - 3600 * utc_plus;
+    return timestamp;
 }
 RTM_EXPORT(mktime);
 
@@ -194,42 +294,21 @@ RTM_EXPORT(ctime);
  */
 RT_WEAK time_t time(time_t *t)
 {
-    time_t time_now = ((time_t)-1); /* default is not available */
+    struct timeval now;
 
-#ifdef RT_USING_RTC
-    static rt_device_t device = RT_NULL;
-
-    /* optimization: find rtc device only first */
-    if (device == RT_NULL)
+    if(get_timeval(&now) > 0)
     {
-        device = rt_device_find("rtc");
-    }
-
-    /* read timestamp from RTC device */
-    if (device != RT_NULL)
-    {
-        if (rt_device_open(device, 0) == RT_EOK)
+        if (t)
         {
-            rt_device_control(device, RT_DEVICE_CTRL_RTC_GET_TIME, &time_now);
-            rt_device_close(device);
+            *t = now.tv_sec;
         }
+        return now.tv_sec;
     }
-#endif /* RT_USING_RTC */
-
-    /* if t is not NULL, write timestamp to *t */
-    if (t != RT_NULL)
+    else
     {
-        *t = time_now;
+        errno = EFAULT;
+        return ((time_t)-1);
     }
-
-    if(time_now == (time_t)-1)
-    {
-        /* LOG_W will cause a recursive printing if ulog timestamp function is turned on */
-        rt_kprintf("Cannot find a RTC device to provide time!\r\n");
-        errno = ENOSYS;
-    }
-
-    return time_now;
 }
 RTM_EXPORT(time);
 
@@ -241,28 +320,24 @@ RTM_EXPORT(clock);
 
 int stime(const time_t *t)
 {
-#ifdef RT_USING_RTC
-    rt_device_t device;
+    struct timeval tv;
 
-    /* read timestamp from RTC device. */
-    device = rt_device_find("rtc");
-    if (rt_device_open(device, 0) == RT_EOK)
+    if (!t)
     {
-        rt_device_control(device, RT_DEVICE_CTRL_RTC_SET_TIME, (void*)t);
-        rt_device_close(device);
+        errno = EFAULT;
+        return -1;
+    }
+
+    tv.tv_sec = *t;
+    if (set_timeval(&tv) > 0)
+    {
+        return 0;
     }
     else
     {
-        LOG_W("Cannot find a RTC device to provide time!");
-        errno = ENOSYS;
+        errno = EFAULT;
         return -1;
     }
-    return 0;
-#else
-    LOG_W("Cannot find a RTC device to provide time!");
-    errno = ENOSYS;
-    return -1;
-#endif /* RT_USING_RTC */
 }
 RTM_EXPORT(stime);
 
@@ -344,17 +419,13 @@ RTM_EXPORT(timegm);
 /* TODO: timezone */
 int gettimeofday(struct timeval *tv, struct timezone *tz)
 {
-    time_t t = time(RT_NULL);
-
-    if (tv != RT_NULL && t != (time_t)-1)
+    if (tv != RT_NULL && get_timeval(tv) > 0)
     {
-        tv->tv_sec = t;
-        tv->tv_usec = 0;
         return 0;
     }
     else
     {
-        errno = ENOSYS;
+        errno = EFAULT;
         return -1;
     }
 }
@@ -365,11 +436,27 @@ int settimeofday(const struct timeval *tv, const struct timezone *tz)
 {
     if (tv != RT_NULL)
     {
-        return stime((const time_t *)&tv->tv_sec);
+        if(tv->tv_sec >= 0 && tv->tv_usec >= 0)
+        {
+            if(set_timeval((struct timeval *)tv) > 0)
+            {
+                return 0;
+            }
+            else
+            {
+                errno = EFAULT;
+                return -1;
+            }
+        }
+        else
+        {
+            errno = EINVAL;
+            return -1;
+        }
     }
     else
     {
-        errno = ENOSYS;
+        errno = EFAULT;
         return -1;
     }
 }
